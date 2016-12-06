@@ -1,0 +1,1096 @@
+package com;
+
+/*
+ * Copyright (c) 2012 Sohu TV. All rights reserved.
+ */
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
+import java.net.UnknownHostException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
+import java.util.Map.Entry;
+
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.transform.TransformerException;
+
+import org.apache.log4j.Logger;
+import org.w3c.dom.DOMException;
+
+import net.sf.json.JSONArray;
+import net.sf.json.JSONObject;
+
+import com.mongodb.BasicDBObject;
+import com.mongodb.DB;
+import com.mongodb.DBCollection;
+import com.mongodb.DBCursor;
+import com.mongodb.DBObject;
+import com.mongodb.Mongo;
+import com.mongodb.MongoException;
+/**
+ * 
+ * 
+ * @author Yu  Qiuhong (qiuhongyu@sohu-inc.com)
+ */
+public class Utils {
+	
+	private final String host="127.0.0.1";
+	private final static String dbname="hot";
+//	private final static String dbname="test";
+	private final static String collectionname="tvleaderboard";
+	private static Logger logger = Logger.getLogger(Utils.class);
+/**
+ * 
+ * @param url
+ * @param user
+ * @param password
+ * @param sql
+ * @return
+ * @throws ClassNotFoundException
+ * @throws SQLException
+ */
+	public ResultSet getResultFromMysql(String url, String user, String password,String sql) 
+	    throws ClassNotFoundException,SQLException{
+	    Class.forName("com.mysql.jdbc.Driver");
+		Connection connectToMysql = DriverManager.getConnection(url, user, password);
+		PreparedStatement stmForSQL = connectToMysql.prepareStatement(sql);
+		ResultSet dbResult = stmForSQL.executeQuery();
+		return dbResult;
+	}
+/**
+	 * 
+	 * @param url
+	 * @param user
+	 * @param password
+	 * @param sql
+	 * @throws ClassNotFoundException
+	 * @throws SQLException
+ * @throws MongoException 
+ * @throws UnknownHostException 
+*/
+	public void insertIntoMysql(String url, String user, String password,String sql,
+			LinkedHashMap<String,Integer> map,int leadernum,int type) 
+	    throws ClassNotFoundException,SQLException, UnknownHostException, MongoException{
+		logger.info("inserting into mysql....");
+		Class.forName("com.mysql.jdbc.Driver");
+		Connection connectToMysql = DriverManager.getConnection(url, user, password);
+		PreparedStatement  pstmForSQL = connectToMysql.prepareStatement(sql);
+		connectToMysql.setAutoCommit(false);
+		Iterator<Map.Entry<String, Integer>>  iter = map.entrySet().iterator();
+		HashMap<String,String>  docmap2=null;
+		String keyword="";
+		int ranking=0;
+		int j=0;
+		while(iter.hasNext()&&j<leadernum&&j<map.size()){
+			Map.Entry<String, Integer> entry =  iter.next();
+			keyword=entry.getKey();
+			ranking=entry.getValue();
+			docmap2=getinfoFromMongoDB(keyword,type);
+			pstmForSQL.setInt(1, type);
+			pstmForSQL.setString(2, keyword);
+			pstmForSQL.setInt(3, ranking);
+			pstmForSQL.setString(4, docmap2.get("Description"));
+			pstmForSQL.setString(5, docmap2.get("Time"));
+			pstmForSQL.setInt(6, Integer.parseInt(docmap2.get("SubType")));
+			pstmForSQL.addBatch();  
+			j++;
+		}
+		pstmForSQL.executeBatch();  
+        connectToMysql.commit();  
+        pstmForSQL.clearBatch(); 
+    	pstmForSQL.close();  
+	}
+	/**
+	 *
+	 * @param map
+	 * @return
+	 */
+	public LinkedHashMap<String, Integer> SortHashMapByValue(
+			HashMap<String, Integer> map) {
+		LinkedHashMap<String, Integer> mapmap = new LinkedHashMap<String, Integer>();
+		List<Map.Entry<String, Integer>> list = new ArrayList<Map.Entry<String, Integer>>(
+				map.entrySet());
+
+		String[] keyObj = new String[list.size()]; 
+		int[] valObj = new int[list.size()];
+
+		for (int i = 0; i < list.size(); i++) {
+			Map.Entry<String, Integer> me = list.get(i);
+			keyObj[i] = me.getKey().toString();
+			valObj[i] = Integer.parseInt(me.getValue().toString());
+		}
+		int le = valObj.length;
+		int int_temp = 0;
+		String string_temp = "";
+		for (int i = 0; i < le - 1; i++) {
+			for (int j = 0; j < le - 1; j++) {
+				if (valObj[j] < valObj[j + 1]) {
+					int_temp = valObj[j];
+					valObj[j] = valObj[j + 1];
+					valObj[j + 1] = int_temp;
+
+					string_temp = keyObj[j];
+					keyObj[j] = keyObj[j + 1];
+					keyObj[j + 1] = string_temp;
+				}
+			}
+		}
+		for (int i = 0; i < le; i++) {
+			mapmap.put(keyObj[i], valObj[i]);
+		}
+		return mapmap;
+	}
+/**
+ * 
+ * @param logfile
+ * @param host
+ * @param interval
+ * @return 
+ * @throws MongoException 
+ * @throws UnknownHostException
+ * @throws MongoException
+ * @throws IOException 
+ * @throws IOException
+ */
+	public HashMap<HashSet<String>,HashSet<Integer>> insertintoMonogoDB(String logfile,String host,
+			int interval,int thistype) throws MongoException, IOException {
+//		System.out.println("inserting into mongodb.......");
+//		long start_time=System.currentTimeMillis();
+		File input=new File(logfile);
+		BufferedReader reader=null;
+		try {
+			reader = new BufferedReader(new InputStreamReader(new FileInputStream(input),"UTF-8"));
+		} catch (UnsupportedEncodingException e) {
+			logger.info("Unsupported   Encoding   Exception");
+			e.printStackTrace();
+		} catch (FileNotFoundException e) {
+			logger.info("File   Not  Found Exception");
+			e.printStackTrace();
+		}
+		HashSet<Integer>  set_of_subtype=new HashSet<Integer>();
+		HashMap<HashSet<String>,HashSet<Integer>>   mapmap=new HashMap<HashSet<String>,HashSet<Integer>>();
+		Mongo m = new Mongo(host);
+		DB db = m.getDB(dbname);
+		db.dropDatabase();		
+		DBCollection col = db.getCollection(collectionname);	
+		col.createIndex(new BasicDBObject("Keyword",1));
+		col.createIndex(new BasicDBObject("Type",1));
+		col.createIndex(new BasicDBObject("SubType",1));
+		String line="";
+		String[] data;
+		int type=0;
+		String key="";
+		String description="";
+		String time="";
+		int subtype=0;
+		List<DBObject> ls=new LinkedList<DBObject>();
+		HashSet<String> set=new HashSet<String>();		
+		int j=0;
+		try {
+			while ((line = reader.readLine()) != null) {
+				JSONObject  obj=new JSONObject();
+				BasicDBObject bo = new BasicDBObject();
+				if (line != null && line.length() > 3) {
+					data = line.split("\t");
+					type = Integer.parseInt(data[0].split(":")[1]);
+					key = data[1].split(":")[1];
+					description = data[3].substring(12);
+					obj=JSONObject.fromObject(description);
+					if("".equals(obj.getString("title"))||obj.getString("title").length()==0){	//if the title is blank,abandon it
+						continue;
+					}
+					subtype = Integer.parseInt(data[2].split(":")[1]);
+					
+					if(type==thistype){				//only count this typs's keyword set and subtype set
+						set.add(key);
+						set_of_subtype.add(subtype);
+					}
+					time = data[4].substring(5);
+					bo.put("Type", type);
+					bo.put("Keyword", key);
+					bo.put("Description", description);
+					bo.put("SubType", subtype);
+					bo.append("Time", time);
+					ls.add(bo);
+					j++;
+					if (j == interval) {
+						col.insert(ls);
+						j = 0;
+						ls.removeAll(ls);
+					}
+				}
+			}
+		} catch (NumberFormatException e) {
+			logger.info("Number  Format  Exception");
+			e.printStackTrace();
+		} catch (IOException e) {
+			logger.info("IOException");
+			e.printStackTrace();
+		}
+		col.insert(ls);
+		mapmap.put(set, set_of_subtype);
+//		long middle=System.currentTimeMillis();
+//		System.out.println("finished inserting into mongodb! Cost time"+(middle-start_time)*1.0/1000+"  s");
+		m.close();
+		reader.close();
+		return mapmap;
+	}
+	
+	/**
+	 * 
+	 * @param set
+	 * @param host
+	 * @param type
+	 * @param subtype
+	 * @return 
+	 * @throws UnknownHostException
+	 */
+
+	public  HashMap<String, Integer>  retrievalFromMongoDB(HashSet<String> set,String host,int type) 
+			throws UnknownHostException{
+		Mongo m = new Mongo(host);
+		DB db = m.getDB(dbname);			
+		DBCollection col = db.getCollection(collectionname);	
+		int  num=0;
+		Iterator<String> lt=set.iterator();
+		HashMap<String,Integer> map=new HashMap<String,Integer>();
+		String keyword="";
+		while(lt.hasNext()){
+			  keyword=lt.next();
+			  num=(int)(col.count(new BasicDBObject("Type",type).append("Keyword",keyword)));
+			  map.put(keyword, num);
+		}
+		m.close();
+		
+		return map;
+	}
+	/**
+	 * 
+	 * @param set
+	 * @param host
+	 * @param type
+	 * @return
+	 * @throws UnknownHostException
+	 */
+	public  HashMap<String, Integer>  retrievalFromMongoDBWithSubtype(HashSet<String> set,
+			String host,int type,int subtype) throws UnknownHostException{
+		Mongo m = new Mongo(host);
+		DB db = m.getDB(dbname);			
+		DBCollection col = db.getCollection(collectionname);	
+		int  num=0;
+		Iterator<String> lt=set.iterator();
+		HashMap<String,Integer> map_of_subtype=new HashMap<String,Integer>();
+		String keyword="";
+		while(lt.hasNext()){	
+			  keyword=lt.next();
+			  num=col.find(new BasicDBObject("Type",type)
+			  						.append("Keyword",keyword)
+			  						.append("SubType",subtype)).count();
+			  map_of_subtype.put(keyword, num);
+		}
+		m.close();
+		return map_of_subtype;
+	}
+	/**
+	 * 
+	 * @param keyword
+	 * @param type
+	 * @return
+	 * @throws UnknownHostException
+	 * @throws MongoException
+	 */
+	public HashMap<String,String> getinfoFromMongoDB(String keyword,int type) 
+			throws UnknownHostException, MongoException{
+		Mongo m = new Mongo(host);
+		DB db = m.getDB(dbname);			
+		DBCollection col = db.getCollection(collectionname);	
+		DBCursor cursor=col.find(new BasicDBObject("Keyword",keyword).append("Type", type));
+		HashMap<String,String> docmap=new HashMap<String,String>();
+		DBObject dbo=null;
+		while(cursor.hasNext()){
+			dbo=cursor.next();
+			docmap.put("Type", String.valueOf(dbo.get("Type")));
+			docmap.put("Keyword", (String)(dbo.get("Keyword")));
+			docmap.put("Description", (String)(dbo.get("Description")));
+			docmap.put("Time", (String)(dbo.get("Time")));
+			docmap.put("SubType", dbo.get("SubType").toString());
+			break;
+		}
+		m.close();
+		return docmap;
+	}
+	/**
+	 * 
+	 * @param keyword
+	 * @param type
+	 * @return
+	 * @throws UnknownHostException
+	 * @throws MongoException
+	 */
+	public HashMap<String,String> getsubtypeinfoFromMongoDB(String keyword,int type,int subtype) 
+			throws UnknownHostException, MongoException{
+		Mongo m = new Mongo(host);
+		DB db = m.getDB(dbname);			
+		DBCollection col = db.getCollection(collectionname);	
+		DBCursor cursor=col.find(new BasicDBObject("Keyword",keyword).append("Type", type).append("SubType", subtype));
+		HashMap<String,String> docmap=new HashMap<String,String>();
+		DBObject dbo=null;
+		while(cursor.hasNext()){
+			dbo=cursor.next();
+			docmap.put("Type", String.valueOf(dbo.get("Type")));
+			docmap.put("Keyword", (String)(dbo.get("Keyword")));
+			docmap.put("Description", (String)(dbo.get("Description")));
+			docmap.put("Time", (String)(dbo.get("Time")));
+			docmap.put("SubType", dbo.get("SubType").toString());
+			break;
+		}
+		m.close();
+		return docmap;
+	}
+	/**
+	 * 
+	 * @param dbresult
+	 * @param file_output_path
+	 * @param num
+	 * @throws ParserConfigurationException
+	 * @throws DOMException
+	 * @throws SQLException
+	 * @throws IOException
+	 * @throws TransformerException
+	 */
+	public void generateJSON(ResultSet dbresult,String path_utf8,String path_gbk,
+			int num,int type,String time) throws ParserConfigurationException,
+			DOMException, SQLException, IOException, TransformerException{
+		File file = new File(path_utf8);  
+		File file2=new File(path_gbk);
+		JSONObject  bigjson=new JSONObject();
+	    JSONArray bigarray=new JSONArray();
+	    bigjson.element("status", 1);
+	    bigjson.element("totalcount", num);
+        int i=0;
+        while(dbresult.next()&&i<num)			
+        {
+       	 	i++;
+       	 	JSONObject  smalljson=new JSONObject();
+       	 	smalljson.element("id", String.valueOf(i))
+       	 	.element("type", dbresult.getString("Type"))
+       	 	.element("keyword", dbresult.getString("Keyword"))
+       	 	.element("frequency", dbresult.getInt("Frequency"))
+       	 	.element("description", dbresult.getString("Description"))
+       	 	.element("subtype", dbresult.getString("SubType"));
+       	 	
+            bigarray.add(smalljson);
+            bigjson.element("data", bigarray);
+            
+        }
+        String sb1="utf8_"+"day"+"_"+type+"("+bigjson.toString()+");";
+        String sb2="gbk_"+"day"+"_"+type+"("+bigjson.toString()+");";
+        byte[] by1=sb1.getBytes("UTF-8");
+        byte[] by2=sb2.getBytes("GBK");
+        FileOutputStream fo1=new FileOutputStream(file);
+        FileOutputStream fo2=new FileOutputStream(file2);
+        fo1.write(by1);
+        fo2.write(by2);
+        fo1.flush();
+        fo1.close();
+        fo2.flush();
+        fo2.close();
+	}
+	/**
+	 * generate total leaderboard
+	 * @param dbresult
+	 * @param path_utf8
+	 * @param path_gbk
+	 * @param num
+	 * @param type
+	 * @throws ParserConfigurationException
+	 * @throws DOMException
+	 * @throws SQLException
+	 * @throws IOException
+	 * @throws TransformerException
+	 */
+	public void generateTotalJSON(ResultSet dbresult,String path_utf8,String path_gbk,
+			int num,int type) throws ParserConfigurationException,
+			DOMException, SQLException, IOException, TransformerException{
+		File file = new File(path_utf8);  
+		File file2=new File(path_gbk);
+		JSONObject  bigjson=new JSONObject();
+	    JSONArray bigarray=new JSONArray();
+	    bigjson.element("status", 1);
+	    bigjson.element("totalcount", num);
+        int i=0;
+        while(dbresult.next()&&i<num)			
+        {
+       	 	i++;
+       	 	JSONObject  smalljson=new JSONObject();
+       	 	smalljson.element("id", String.valueOf(i))
+       	 	.element("type", dbresult.getString("Type"))
+       	 	.element("keyword", dbresult.getString("Keyword"))
+       	 	.element("frequency", dbresult.getInt("top"))
+       	 	.element("description", dbresult.getString("Description"))
+       	 	.element("subtype", dbresult.getString("SubType"));
+       	 	
+            bigarray.add(smalljson);
+            bigjson.element("data", bigarray);
+            
+        }
+        String sb1="utf8_"+type+"("+bigjson.toString()+");";
+        String sb2="gbk_"+type+"("+bigjson.toString()+");";
+        byte[] by1=sb1.getBytes("UTF-8");
+        byte[] by2=sb2.getBytes("GBK");
+        FileOutputStream fo1=new FileOutputStream(file);
+        FileOutputStream fo2=new FileOutputStream(file2);
+        fo1.write(by1);
+        fo2.write(by2);
+        fo1.flush();
+        fo1.close();
+        fo2.flush();
+        fo2.close();
+	}
+	/**
+	 * 生成总的子榜单
+	 * @param dbresult
+	 * @param path_utf8
+	 * @param path_gbk
+	 * @param num
+	 * @param type
+	 * @throws ParserConfigurationException
+	 * @throws DOMException
+	 * @throws SQLException
+	 * @throws IOException
+	 * @throws TransformerException
+	 */
+	public void generateTotalSubJSON(ResultSet dbresult,String path_utf8,String path_gbk,
+			int num,int type,int subtype) throws ParserConfigurationException,
+			DOMException, SQLException, IOException, TransformerException{
+		File file = new File(path_utf8);  
+		File file2=new File(path_gbk);
+		JSONObject  bigjson=new JSONObject();
+	    JSONArray bigarray=new JSONArray();
+	    bigjson.element("status", 1);
+	    bigjson.element("totalcount", num);
+        int i=0;
+        while(dbresult.next()&&i<num)			
+        {
+       	 	i++;
+       	 	JSONObject  smalljson=new JSONObject();
+       	 	smalljson.element("id", String.valueOf(i))
+       	 	.element("type", dbresult.getString("Type"))
+       	 	.element("keyword", dbresult.getString("Keyword"))
+       	 	.element("frequency", dbresult.getInt("top"))
+       	 	.element("description", dbresult.getString("Description"))
+       	 	.element("subtype", dbresult.getString("SubType"));
+       	 	
+            bigarray.add(smalljson);
+            bigjson.element("data", bigarray);
+            
+        }
+        String sb1="utf8_"+type+"("+bigjson.toString()+");";
+        String sb2="gbk_"+type+"("+bigjson.toString()+");";
+        byte[] by1=sb1.getBytes("UTF-8");
+        byte[] by2=sb2.getBytes("GBK");
+        FileOutputStream fo1=new FileOutputStream(file);
+        FileOutputStream fo2=new FileOutputStream(file2);
+        fo1.write(by1);
+        fo2.write(by2);
+        fo1.flush();
+        fo1.close();
+        fo2.flush();
+        fo2.close();
+	}
+	/**
+	 * generateJSON By month
+	 * @param dbresult
+	 * @param path_utf8
+	 * @param path_gbk
+	 * @param num
+	 * @param type
+	 * @param time
+	 * @throws ParserConfigurationException
+	 * @throws DOMException
+	 * @throws SQLException
+	 * @throws IOException
+	 * @throws TransformerException
+	 */
+	public void generateJSONymonth(ResultSet dbresult,String path_utf8,
+			String path_gbk,int num,int type,String time) 
+			throws ParserConfigurationException, DOMException, SQLException, IOException, TransformerException{
+		File file = new File(path_utf8);  
+		File file2=new File(path_gbk);
+		JSONObject  bigjson=new JSONObject();
+	    JSONArray bigarray=new JSONArray();
+	    bigjson.element("status", 1);
+	    bigjson.element("totalcount", num);
+        int i=0;
+        while(dbresult.next()&&i<num)			
+        {
+       	 	i++;
+       	 	JSONObject  smalljson=new JSONObject();
+       	 	smalljson.element("id", String.valueOf(i))
+       	 	.element("type", dbresult.getString("Type"))
+       	 	.element("keyword", dbresult.getString("Keyword"))
+       	 	.element("frequency", dbresult.getInt("top"))
+       	 	.element("description", dbresult.getString("Description"))
+       	 	.element("subtype", dbresult.getString("SubType"));
+       	 	
+            bigarray.add(smalljson);
+            bigjson.element("data", bigarray);
+            
+        }
+        String sb1="utf8_"+"month"+"_"+type+"("+bigjson.toString()+");";
+        String sb2="gbk_"+"month"+"_"+type+"("+bigjson.toString()+");";
+        byte[] by1=sb1.getBytes("UTF-8");
+        byte[] by2=sb2.getBytes("GBK");
+        FileOutputStream fo1=new FileOutputStream(file);
+        FileOutputStream fo2=new FileOutputStream(file2);
+        fo1.write(by1);
+        fo2.write(by2);
+        fo1.flush();
+        fo1.close();
+        fo2.flush();
+        fo2.close();
+	}
+	public void generateJSONByHashMap(LinkedHashMap<String, Integer>  map,int type,
+			int subtype,String file_utf8,String file_gbk,int num,String time) 
+			throws ParserConfigurationException, MongoException, IOException, TransformerException{
+        int i=0;
+        File file = new File(file_utf8); 
+        File file2 = new File(file_gbk); 
+        Set<Entry<String, Integer>> entrySet=map.entrySet();
+        Iterator<Entry<String, Integer>> lt=entrySet.iterator();
+        String keyword="";
+        HashMap<String,String>  mapmap=new HashMap<String,String>();
+        JSONObject  bigjson=new JSONObject();
+        bigjson.element("status", 1);
+        bigjson.element("totalcount", num);
+	    JSONArray bigarray=new JSONArray();
+        while(lt.hasNext()&&i<num){
+        	i++;
+        	JSONObject  smalljson=new JSONObject();
+        	Map.Entry<String, Integer>  ebtr=lt.next();
+        	keyword=ebtr.getKey().toString();
+        	mapmap=getsubtypeinfoFromMongoDB(keyword,type,subtype);
+        	
+        	smalljson.element("id", String.valueOf(i));
+        	smalljson.element("type", mapmap.get("Type"));
+        	smalljson.element("keyword", mapmap.get("Keyword"));
+        	smalljson.element("frequency", map.get(keyword));
+        	smalljson.element("time", mapmap.get("Time"));
+        	smalljson.element("subtype", mapmap.get("SubType"));
+        	smalljson.element("description", mapmap.get("Description"));
+  
+        	bigarray.add(smalljson);
+            bigjson.element("data", bigarray);
+        }
+        String sb1="utf8_"+"day"+"_"+type+"_"+subtype+"("+bigjson.toString()+");";
+        String sb2="gbk_"+"day"+"_"+type+"_"+subtype+"("+bigjson.toString()+");";
+        byte[] by1=sb1.getBytes("UTF-8");
+        byte[] by2=sb2.getBytes("GBK");
+        FileOutputStream fo1=new FileOutputStream(file);
+        FileOutputStream fo2=new FileOutputStream(file2);
+        fo1.write(by1);
+        fo2.write(by2);
+        fo1.flush();
+        fo1.close();
+        fo2.flush();
+        fo2.close();
+	}
+	
+	/**
+	 * @param args
+	 * @throws FileNotFoundException 
+	 * @throws IOException 
+	 */
+	public  HashMap<String,String> getarg() throws FileNotFoundException {
+		logger.info("get properties file ...... ");
+		Properties prop = new Properties();
+		InputStream in = new FileInputStream("/root/conf.properties");
+		try {
+			prop.load(in);
+		} catch (IOException e) {
+			logger.info("get properties file error ");
+			e.printStackTrace();
+		}
+		Set<Object> keyValue = prop.keySet();
+		HashMap<String,String> map= new HashMap<String,String>();
+		for (Iterator<Object> it = keyValue.iterator(); it.hasNext();)
+		{
+		String key = (String) it.next();
+		String value = prop.getProperty(key);
+		map.put(key, value);
+		}
+		logger.info("get properties file success ");
+		return map;
+	}
+	/**
+	 * 
+	 * @param url
+	 * @param user
+	 * @param password
+	 * @param sql
+	 * @return
+	 * @throws ClassNotFoundException
+	 * @throws SQLException
+	 */
+	public ResultSet getResultbyMonth(String url, String user, 
+			String password,String sql) throws ClassNotFoundException, SQLException{
+		Class.forName("com.mysql.jdbc.Driver");
+		Connection connectToMysql = DriverManager.getConnection(url, user, password);
+		PreparedStatement stmForSQL = connectToMysql.prepareStatement(sql);
+		ResultSet dbResult = stmForSQL.executeQuery();
+		return dbResult;
+	}
+	
+	/**
+	 * 
+	 * @param dbresult
+	 * @param file_output_path
+	 * @param num
+	 * @throws ParserConfigurationException
+	 * @throws DOMException
+	 * @throws SQLException
+	 * @throws IOException
+	 * @throws TransformerException
+	 */
+	public void generateJSONByMonthofsubtype(ResultSet dbresult,String path_utf8,
+			String path_gbk,int num,int type,int subtype,String time) 
+			throws ParserConfigurationException, DOMException, SQLException, IOException, TransformerException{
+		File file = new File(path_utf8);  
+		File file2=new File(path_gbk);
+		JSONObject  bigjson=new JSONObject();
+	    JSONArray bigarray=new JSONArray();
+	    bigjson.element("status", 1);
+	    bigjson.element("totalcount", num);
+        int i=0;
+        while(dbresult.next()&&i<num)			
+        {
+       	 	i++;
+       	 	JSONObject  smalljson=new JSONObject();
+       	 	smalljson.element("id", String.valueOf(i))
+       	 	.element("type", dbresult.getString("Type"))
+       	 	.element("keyword", dbresult.getString("Keyword"))
+       	 	.element("frequency", dbresult.getInt("top"))
+       	 	.element("description", dbresult.getString("Description"))
+       	 	.element("subtype", dbresult.getString("SubType"));
+       	 	
+            bigarray.add(smalljson);
+            bigjson.element("data", bigarray);
+            
+        }
+        String sb1="utf8_"+"month"+"_"+type+"_"+subtype+"("+bigjson.toString()+");";
+        String sb2="gbk_"+"month"+"_"+type+"_"+subtype+"("+bigjson.toString()+");";
+        byte[] by1=sb1.getBytes("UTF-8");
+        byte[] by2=sb2.getBytes("GBK");
+        FileOutputStream fo1=new FileOutputStream(file);
+        FileOutputStream fo2=new FileOutputStream(file2);
+        fo1.write(by1);
+        fo2.write(by2);
+        fo1.flush();
+        fo1.close();
+        fo2.flush();
+        fo2.close();
+	}
+	public void generateMonthLeaderBoard(String time,String todaytime,int[] alltype,String url,
+			String user,String password,String json_path){
+		String[] bigmonth={"01","03","05","07","08","10","12"};
+		String[] smallmonth={"04","06","09","11"};
+		String month=time.substring(4, 6);
+		String day=time.substring(6, 8);
+		String yearandmonth=time.substring(0, 6);
+		String year_and_month=todaytime.substring(0, 7);
+		List<String> lsb=Arrays.asList(bigmonth);
+		List<String> lss=Arrays.asList(smallmonth);
+		ResultSet rs_month=null;
+		ResultSet rs_month_subset=null;
+		ResultSet rs_month_sub=null;
+//		int leader_of_month=Integer.parseInt(mapofpro.get("leader_of_month"));
+		int leader_of_month=30;
+		if(lsb.contains(month)&&day.equals("31")){				//month with 31 days
+			for(int w=0;w<alltype.length;w++){
+				int type=alltype[w];
+				String sql="SELECT Type,Keyword,SubType,Description,SUM(Frequency) AS top FROM tvleaderboard where Time>'"
+					+year_and_month+"' AND Type='"+type+"' GROUP BY Keyword ORDER BY top DESC LIMIT 0,100";
+				try {
+					rs_month=getResultbyMonth(url,user,password,sql);
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+				String json_output_path_utf8 = json_path + "utf8_" + yearandmonth + "_" + type+ ".js";
+				String json_output_path_gbk = json_path + "gbk_" + yearandmonth + "_" + type+ ".js";
+				try {
+					generateJSONymonth(rs_month, json_output_path_utf8, json_output_path_gbk, leader_of_month, type, yearandmonth);
+				} catch (DOMException e) {
+					e.printStackTrace();
+				} catch (ParserConfigurationException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				} catch (IOException e) {
+					e.printStackTrace();
+				} catch (TransformerException e) {
+					e.printStackTrace();
+				}
+				
+				String sql2="SELECT DISTINCT SubType FROM `tvleaderboard` WHERE Time>'"+year_and_month+"' ";
+				
+				try {
+					rs_month_subset=getResultFromMysql(url,user,password,sql2);
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+				try {
+					while(rs_month_subset.next()){
+						int subtypeofmonth=rs_month_subset.getInt("SubType");
+						String sql3="SELECT Type,Keyword,SubType,Description,SUM(Frequency) AS top FROM tvleaderboard where Time>'"
+							+year_and_month+"' AND Type='"+type+"' AND SubType='"+subtypeofmonth+"' GROUP BY Keyword ORDER BY top DESC LIMIT 0,100";
+						rs_month_sub=getResultbyMonth(url,user,password,sql3);
+						String json_subtype_path_utf8 = json_path + "utf8_" + yearandmonth+ "_" + type + "_" + subtypeofmonth + ".js"; // the path of sub leaderboard
+						String json_subtype_path_gbk = json_path + "gbk_" + yearandmonth + "_"+ type + "_" + subtypeofmonth + ".js";
+						generateJSONByMonthofsubtype(rs_month_sub, json_subtype_path_utf8, json_subtype_path_gbk, leader_of_month, type,subtypeofmonth, yearandmonth);
+					}
+				} catch (SQLException e) {
+					e.printStackTrace();
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (DOMException e) {
+					e.printStackTrace();
+				} catch (ParserConfigurationException e) {
+					e.printStackTrace();
+				} catch (IOException e) {
+					e.printStackTrace();
+				} catch (TransformerException e) {
+					e.printStackTrace();
+				}
+			}
+			
+		}
+		else if(lss.equals(month)&&day.equals("30")){			//month with 30 days
+			
+			for(int w=0;w<alltype.length;w++){
+				int type=alltype[w];
+				String sql="SELECT Type,Keyword,SubType,Description,SUM(Frequency) AS top FROM tvleaderboard where Time>'"
+					+year_and_month+"' AND Type='"+type+"' GROUP BY Keyword ORDER BY top DESC LIMIT 0,100";
+				try {
+					rs_month=getResultbyMonth(url,user,password,sql);
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+				String json_output_path_utf8 = json_path + "utf8_" + yearandmonth + "_" + type+ ".js";
+				String json_output_path_gbk = json_path + "gbk_" + yearandmonth + "_" + type+ ".js";
+				try {
+					generateJSONymonth(rs_month, json_output_path_utf8, json_output_path_gbk, leader_of_month, type, yearandmonth);
+				} catch (DOMException e) {
+					e.printStackTrace();
+				} catch (ParserConfigurationException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				} catch (IOException e) {
+					e.printStackTrace();
+				} catch (TransformerException e) {
+					e.printStackTrace();
+				}
+				
+				String sql2="SELECT DISTINCT SubType FROM `tvleaderboard` WHERE Time>'"+year_and_month+"' ";
+				
+				try {
+					rs_month_subset=getResultFromMysql(url,user,password,sql2);
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+				try {
+					while(rs_month_subset.next()){
+						int subtypeofmonth=rs_month_subset.getInt("SubType");
+						String sql3="SELECT Type,Keyword,SubType,Description,SUM(Frequency) AS top FROM tvleaderboard where Time>'"
+							+year_and_month+"' AND Type='"+type+"' AND SubType='"+subtypeofmonth+"' GROUP BY Keyword ORDER BY top DESC LIMIT 0,100";
+						rs_month_sub=getResultbyMonth(url,user,password,sql3);
+						String json_subtype_path_utf8 = json_path + "utf8_" + yearandmonth+ "_" + type + "_" + subtypeofmonth + ".js"; // the path of sub leaderboard
+						String json_subtype_path_gbk = json_path + "gbk_" + yearandmonth + "_"+ type + "_" + subtypeofmonth + ".js";
+						generateJSONByMonthofsubtype(rs_month_sub, json_subtype_path_utf8, json_subtype_path_gbk, leader_of_month, type,subtypeofmonth, yearandmonth);
+					}
+				} catch (SQLException e) {
+					e.printStackTrace();
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (DOMException e) {
+					e.printStackTrace();
+				} catch (ParserConfigurationException e) {
+					e.printStackTrace();
+				} catch (IOException e) {
+					e.printStackTrace();
+				} catch (TransformerException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+		else if(month.equals("02")&&day.equals("28")){
+			for(int w=0;w<alltype.length;w++){
+				int type=alltype[w];
+				String sql="SELECT Type,Keyword,SubType,Description,SUM(Frequency) AS top FROM tvleaderboard where Time>'"
+					+year_and_month+"' AND Type='"+type+"' GROUP BY Keyword ORDER BY top DESC LIMIT 0,100";
+				try {
+					rs_month=getResultbyMonth(url,user,password,sql);
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+				String json_output_path_utf8 = json_path + "utf8_" + yearandmonth + "_" + type+ ".js";
+				String json_output_path_gbk = json_path + "gbk_" + yearandmonth + "_" + type+ ".js";
+				try {
+					generateJSONymonth(rs_month, json_output_path_utf8, json_output_path_gbk, leader_of_month, type, yearandmonth);
+				} catch (DOMException e) {
+					e.printStackTrace();
+				} catch (ParserConfigurationException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				} catch (IOException e) {
+					e.printStackTrace();
+				} catch (TransformerException e) {
+					e.printStackTrace();
+				}
+				
+				String sql2="SELECT DISTINCT SubType FROM `tvleaderboard` WHERE Time>'"+year_and_month+"' ";
+				
+				try {
+					rs_month_subset=getResultFromMysql(url,user,password,sql2);
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (SQLException e) {
+					e.printStackTrace();
+				}
+				try {
+					while(rs_month_subset.next()){
+						int subtypeofmonth=rs_month_subset.getInt("SubType");
+						String sql3="SELECT Type,Keyword,SubType,Description,SUM(Frequency) AS top FROM tvleaderboard where Time>'"
+							+year_and_month+"' AND Type='"+type+"' AND SubType='"+subtypeofmonth+"' GROUP BY Keyword ORDER BY top DESC LIMIT 0,100";
+						rs_month_sub=getResultbyMonth(url,user,password,sql3);
+						String json_subtype_path_utf8 = json_path + "utf8_" + yearandmonth+ "_" + type + "_" + subtypeofmonth + ".js"; // the path of sub leaderboard
+						String json_subtype_path_gbk = json_path + "gbk_" + yearandmonth + "_"+ type + "_" + subtypeofmonth + ".js";
+						generateJSONByMonthofsubtype(rs_month_sub, json_subtype_path_utf8, json_subtype_path_gbk, leader_of_month, type,subtypeofmonth, yearandmonth);
+					}
+				} catch (SQLException e) {
+					e.printStackTrace();
+				} catch (ClassNotFoundException e) {
+					e.printStackTrace();
+				} catch (DOMException e) {
+					e.printStackTrace();
+				} catch (ParserConfigurationException e) {
+					e.printStackTrace();
+				} catch (IOException e) {
+					e.printStackTrace();
+				} catch (TransformerException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+		else{
+			
+		}
+	}
+	
+	public void generateDayLeaderboard(String log_path,int interval,int type,String json_path,String time,
+			String url,String user,String password,String insertsql,
+			int num_of_insert_to_sql,String selectsql,int num_of_leader,int subtype_leader) throws IOException{
+		HashMap<HashSet<String>, HashSet<Integer>> double_set = new HashMap<HashSet<String>, HashSet<Integer>>();
+		try {
+			logger.info("开始向monogdb中插入...");
+			double_set = insertintoMonogoDB(log_path, host, interval,type);
+		} catch (UnknownHostException e) {
+			e.printStackTrace();
+		} catch (MongoException e) {
+			e.printStackTrace();
+		} 
+		Set<HashSet<String>> it_set = double_set.keySet();
+		Iterator<HashSet<String>> ltt = it_set.iterator();
+		HashSet<String> set = new HashSet<String>();
+		while (ltt.hasNext()) {
+			set = ltt.next(); // the set of keyword
+		}
+		HashSet<Integer> set_of_subtype = double_set.get(set); // the set of
+																// subtype
+
+		HashMap<String, Integer> mapmap = new HashMap<String, Integer>();
+
+		String json_output_path_utf8 = json_path + "utf8_" + time + "_" + type
+				+ ".js";
+		String json_output_path_gbk = json_path + "gbk_" + time + "_" + type
+				+ ".js";
+
+		try {
+			logger.info("开始从mongodb中检索....");
+			mapmap = retrievalFromMongoDB(set, host, type);
+		} catch (UnknownHostException e) {
+			e.printStackTrace();
+		}
+		Collection<Integer> col = mapmap.values();
+		Iterator<Integer> lll = col.iterator();
+		int flag = 0;
+		while (lll.hasNext()) {
+			flag = Integer.parseInt(lll.next().toString());
+			break;
+		}
+		if (flag == 0) { // if the log file does not have this type,go to next type
+			System.out.println("does not have type "+type+"	stop this loop");
+			return;
+		} else {
+			LinkedHashMap<String, Integer> sortedmap = SortHashMapByValue(mapmap); // the main leaderboard
+													// sorted by value
+			try {
+				insertIntoMysql(url, user, password, insertsql,
+						sortedmap, num_of_insert_to_sql, type);
+			} catch (UnknownHostException e) {
+				e.printStackTrace();
+			} catch (MongoException e) {
+				e.printStackTrace();
+			} catch (ClassNotFoundException e) {
+				e.printStackTrace();
+			} catch (SQLException e) {
+				e.printStackTrace();
+			}
+			try {
+				logger.info("get result from mysql.....");
+				ResultSet rs = getResultFromMysql(url, user,
+						password, selectsql);
+				logger.info("begin generate JSON.....");
+				generateJSON(rs, json_output_path_utf8,
+								json_output_path_gbk, num_of_leader,
+								type, time);
+			} catch (ClassNotFoundException e) {
+				e.printStackTrace();
+			} catch (SQLException e) {
+				e.printStackTrace();
+			} catch (DOMException e) {
+				e.printStackTrace();
+			} catch (ParserConfigurationException e) {
+				e.printStackTrace();
+			} catch (IOException e) {
+				e.printStackTrace();
+			} catch (TransformerException e) {
+				e.printStackTrace();
+			}
+
+			HashMap<String, Integer> map_of_subtype = new HashMap<String, Integer>();
+			LinkedHashMap<String, Integer> sorted_map_of_subtype = new LinkedHashMap<String, Integer>();
+
+			for (int i = 0; i < set_of_subtype.size(); i++) {
+				int sub_type = Integer.parseInt((set_of_subtype.toArray()[i])
+								.toString());
+				logger.info("generating sub leaderboad of, the sub type is " + sub_type);
+				String json_subtype_path_utf8 = json_path + "utf8_" + time
+						+ "_" + type + "_" + sub_type + ".js"; // the path of sub leaderboard
+				String json_subtype_path_gbk = json_path + "gbk_" + time + "_"
+						+ type + "_" + sub_type + ".js";
+				try {
+					logger.info("retrieving from mongodb...");
+					map_of_subtype = retrievalFromMongoDBWithSubtype(set,
+									host, type, sub_type);
+				} catch (UnknownHostException e) {
+					e.printStackTrace();
+				}
+				sorted_map_of_subtype = SortHashMapByValue(map_of_subtype);
+				try {
+					logger.info("generating JSON of sub type...");
+					generateJSONByHashMap(
+									sorted_map_of_subtype, type,
+									sub_type, json_subtype_path_utf8,
+									json_subtype_path_gbk,
+									subtype_leader, time);
+				} catch (MongoException e) {
+					e.printStackTrace();
+				} catch (ParserConfigurationException e) {
+					e.printStackTrace();
+				} catch (IOException e) {
+					e.printStackTrace();
+				} catch (TransformerException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+	}
+	//生成总榜单
+	public void generateAllLeaderboard(int type,String json_path,String url, String user,
+			String password,int num_of_leader) throws SQLException, ClassNotFoundException,
+			DOMException, ParserConfigurationException, IOException, TransformerException{
+		String sql1="SELECT DISTINCT subtype from tvleaderboard where Type='"+type+"'";
+		String sql2="SELECT Type,Keyword,SubType,Description,SUM(Frequency) AS top FROM tvleaderboard " +
+				"where Type='"+type+"' GROUP BY Keyword ORDER BY top DESC LIMIT 0,100";
+		
+		ResultSet leaderofthistype=null;
+		try {
+			leaderofthistype=getResultFromMysql(url,  user,  password, sql2);
+		} catch (ClassNotFoundException e1) {
+			e1.printStackTrace();
+		} catch (SQLException e1) {
+			e1.printStackTrace();
+		}
+		String path_utf8 = json_path + "utf8_"  + type + ".js";
+		String path_gbk = json_path + "gbk_"  + type + ".js";
+		try {
+			generateTotalJSON(leaderofthistype, path_utf8, path_gbk,num_of_leader,type);
+		} catch (DOMException e1) {
+			e1.printStackTrace();
+		} catch (ParserConfigurationException e1) {
+			e1.printStackTrace();
+		} catch (SQLException e1) {
+			e1.printStackTrace();
+		} catch (IOException e1) {
+			e1.printStackTrace();
+		} catch (TransformerException e1) {
+			e1.printStackTrace();
+		}
+			
+	
+		//生成总的子榜单
+		ResultSet allsubtype_of_thistype=null;
+		try {
+			allsubtype_of_thistype=getResultFromMysql( url,  user,  password, sql1);
+		} catch (ClassNotFoundException e) {
+			e.printStackTrace();
+		} catch (SQLException e) {
+			e.printStackTrace();
+		}
+		ResultSet  resultofthissubtype=null;
+		while(allsubtype_of_thistype.next()){
+			int subtype=allsubtype_of_thistype.getInt("subtype");
+			String sql3="SELECT Type,Keyword,SubType,Description,SUM(Frequency) AS top FROM tvleaderboard " +
+			"where Type='"+type+"'AND SubType='"+subtype+"' GROUP BY Keyword ORDER BY top DESC LIMIT 0,100";
+			resultofthissubtype=getResultFromMysql(url,  user,  password, sql3);
+			 path_utf8 = json_path + "utf8_"  + type +"_"+subtype+ ".js";
+			 path_gbk = json_path + "gbk_"  + type +"_"+subtype+ ".js";
+			generateTotalSubJSON( resultofthissubtype, path_utf8, path_gbk, num_of_leader, type, subtype);
+		}
+	}
+	
+
+}
